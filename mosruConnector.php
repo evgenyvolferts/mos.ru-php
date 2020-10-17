@@ -69,7 +69,7 @@ class mosruConnector
     /**
      * @return boolean Auth result
      */
-    public function login()
+    private function login()
     {
         $ch = curl_init();
         $curlOptions = [
