@@ -30,11 +30,11 @@ class mosruConnector
         if (!file_exists('config.php')) {
             exit("Ошибка! Не найден файл конфигурации!\n Ознакомьтесь с примером в файле config.php.sample\n");
         }
-        $this->config = require_once('config.php');;
+        $this->config = require_once('config.php');
         $this->cookie = tempnam(sys_get_temp_dir(), "mosru-cookie-");
 
         $this->curlDefaultOptions = [
-            CURLOPT_USERAGENT      => 'Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.36',
+            CURLOPT_USERAGENT      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.75 Safari/537.36',
             CURLOPT_REFERER        => ';auto',
             CURLOPT_SSL_VERIFYPEER => false,
             CURLOPT_FOLLOWLOCATION => true,
@@ -42,6 +42,20 @@ class mosruConnector
             CURLOPT_COOKIEFILE     => $this->cookie,
             CURLOPT_RETURNTRANSFER => true,
         ];
+    }
+
+    /**
+     * @param array $cookies
+     * @return bool
+     */
+    private static function tokenPresent($cookies = [])
+    {
+        foreach ($cookies as $cookie) {
+            if ($cookie['name'] == 'Ltpatoken2') {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -55,17 +69,17 @@ class mosruConnector
     /**
      * @return boolean Auth result
      */
-    private function login()
+    public function login()
     {
         $ch = curl_init();
         $curlOptions = [
-            CURLOPT_URL => 'https://my.mos.ru/my/',
+            CURLOPT_URL => 'https://my.mos.ru/login',
         ];
         curl_setopt_array($ch, $this->curlDefaultOptions + $curlOptions);
         $this->response = curl_exec($ch);
         curl_close($ch);
 
-        preg_match_all('/value="(https:\/\/oauth20.mos.ru\/sps\/oauth\/oauth20(.*))"/', $this->response, $matches);
+        preg_match_all('/login_url = "(https:\/\/login.mos.ru\/sps\/oauth\/ae(.*))"/', $this->response, $matches);
 
         if (!isset($matches[1])) {
             return false;
@@ -85,9 +99,9 @@ class mosruConnector
             CURLOPT_POST       => true,
             CURLOPT_POSTFIELDS => http_build_query(
                 [
-                    'login'    => urldecode($this->config['login']),
-                    'password' => urldecode($this->config['password']),
-                    'me'       => 'on',
+                    'login'     => urldecode($this->config['login']),
+                    'password'  => urldecode($this->config['password']),
+                    'isDelayed' => 'false',
                 ]
             ),
         ];
@@ -97,16 +111,15 @@ class mosruConnector
 
         $ch = curl_init();
         $curlOptions = [
-            CURLOPT_URL => 'https://beta-my.mos.ru/my/',
+            CURLOPT_URL => 'https://my.mos.ru/my/#/',
         ];
         curl_setopt_array($ch, $this->curlDefaultOptions + $curlOptions);
         $this->response = curl_exec($ch);
         curl_close($ch);
 
-        if (isset($_COOKIE['Ltpatoken2'])) {
+        if (!self::tokenPresent(self::extractCookies(file_get_contents($this->cookie)))) {
             return false;
-        }
-        else {
+        } else {
             $this->authorized = true;
             return true;
         }
@@ -237,8 +250,7 @@ class mosruConnector
             if (isset($this->coldCounter[$num]) && (array_values($countersInfo)[0]['cold'][$num] >= $value)) {
                 $this->error = true;
                 $this->errorMessage .= "Ошибка! Прежнее показание счетчика холодной воды ({$num}) больше или равно указанному!\n";
-            }
-            elseif (isset($this->hotCounter[$num]) && (array_values($countersInfo)[0]['hot'][$num] >= $value)) {
+            } elseif (isset($this->hotCounter[$num]) && (array_values($countersInfo)[0]['hot'][$num] >= $value)) {
                 $this->error = true;
                 $this->errorMessage .= "Ошибка! Прежнее показание счетчика горячей воды ({$num}) больше или равно указанному!\n";
             }
@@ -258,8 +270,7 @@ class mosruConnector
             foreach ($values as $num => $value) {
                 if (isset($this->coldCounter[$num])) {
                     $id = $this->coldCounter[$num]['counterId'];
-                }
-                elseif (isset($this->hotCounter[$num])) {
+                } elseif (isset($this->hotCounter[$num])) {
                     $id = $this->hotCounter[$num]['counterId'];
                 }
                 $query["items[indications][{$i}}][counterNum]"] = $id;
@@ -289,8 +300,7 @@ class mosruConnector
 
         if (!$this->error) {
             echo "Показания счетчиков успешно переданы.\n";
-        }
-        else {
+        } else {
             echo $this->errorMessage;
         }
     }
@@ -325,8 +335,7 @@ class mosruConnector
 
         if (!$this->error) {
             echo "Последние показания счетчиков успешно удалены.\n";
-        }
-        else {
+        } else {
             echo $this->errorMessage;
         }
     }
@@ -355,6 +364,65 @@ class mosruConnector
         $this->response = curl_exec($ch);
         curl_close($ch);
         return json_decode($this->response);
+    }
+
+    /**
+     * Extract any cookies found from the cookie file. This function expects to get
+     * a string containing the contents of the cookie file which it will then
+     * attempt to extract and return any cookies found within.
+     *
+     * @param string $string The contents of the cookie file.
+     *
+     * @return array The array of cookies as extracted from the string.
+     *
+     * @link https://stackoverflow.com/questions/410109/php-reading-a-cookie-file
+     *
+     */
+    private static function extractCookies($string)
+    {
+        $cookies = [];
+        $lines = explode(PHP_EOL, $string);
+
+        foreach ($lines as $line) {
+
+            $cookie = [];
+
+            // detect httponly cookies and remove #HttpOnly prefix
+            if (substr($line, 0, 10) == '#HttpOnly_') {
+                $line = substr($line, 10);
+                $cookie['httponly'] = true;
+            } else {
+                $cookie['httponly'] = false;
+            }
+
+            // we only care for valid cookie def lines
+            if (strlen($line) > 0 && $line[0] != '#' && substr_count($line, "\t") == 6) {
+
+                // get tokens in an array
+                $tokens = explode("\t", $line);
+
+                // trim the tokens
+                $tokens = array_map('trim', $tokens);
+
+                // Extract the data
+                $cookie['domain'] = $tokens[0]; // The domain that created AND can read the variable.
+                $cookie['flag'] = $tokens[1];   // A TRUE/FALSE value indicating if all machines within a given domain can access the variable.
+                $cookie['path'] = $tokens[2];   // The path within the domain that the variable is valid for.
+                $cookie['secure'] = $tokens[3]; // A TRUE/FALSE value indicating if a secure connection with the domain is needed to access the variable.
+
+                $cookie['expiration-epoch'] = $tokens[4];  // The UNIX time that the variable will expire on.
+                $cookie['name'] = urldecode($tokens[5]);   // The name of the variable.
+                $cookie['value'] = urldecode($tokens[6]);  // The value of the variable.
+
+                // Convert date to a readable format
+                $cookie['expiration'] = date('Y-m-d h:i:s', $tokens[4]);
+
+                // Record the cookie.
+                $cookies[] = $cookie;
+            }
+        }
+
+        return $cookies;
     }
 
 }
